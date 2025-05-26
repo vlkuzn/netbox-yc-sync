@@ -1,0 +1,4 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+structlog>=23.0.0
+pynetbox>=7.0.0 
