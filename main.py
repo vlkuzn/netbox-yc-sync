@@ -6,15 +6,15 @@ from config import Config
 from clients.yandex_cloud_client import YandexCloudClient
 from clients.netbox_client import NetBoxClient
 from sync.synchronizer import compare_and_plan
-from sync.flexible_synchronizer import compare_and_plan_flexible
+# from sync.flexible_synchronizer import compare_and_plan_flexible
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Sync Yandex Cloud VMs to NetBox.")
     parser.add_argument("--dry-run", action="store_true", help="Show actions without applying changes.")
-    parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
+    parser.add_argument("--log-level", choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                        default='INFO', help="Set logging level")
-    parser.add_argument("--ignore-clusters", action="store_true", 
+    parser.add_argument("--ignore-clusters", action="store_true",
                        help="Match VMs by name only, ignoring cluster assignments")
     return parser.parse_args()
 
@@ -23,35 +23,35 @@ def main():
     """Main application entry point."""
     load_dotenv()
     args = parse_args()
-    
+
     try:
         config = Config.from_env(dry_run=args.dry_run)
         config.log_level = args.log_level
         config.ignore_clusters = args.ignore_clusters
         config.setup_logging()
-        
+
         logger = logging.getLogger(__name__)
         logger.info(f"Starting NetBox-YC sync (dry_run={config.dry_run})")
-        
+
         # Initialize clients
         yc_client = YandexCloudClient(config.yc_token)
         nb_client = NetBoxClient(
-            config.netbox_url, 
-            config.netbox_token, 
-            config.netbox_site, 
+            config.netbox_url,
+            config.netbox_token,
+            config.netbox_site,
             dry_run=config.dry_run
         )
-        
+
         # Perform synchronization
-        sync_result = perform_sync(yc_client, nb_client, logger, config.dry_run, 
+        sync_result = perform_sync(yc_client, nb_client, logger, config.dry_run,
                                  getattr(config, 'ignore_clusters', False))
-        
+
         if sync_result:
             logger.info("Synchronization completed successfully")
         else:
             logger.error("Synchronization failed")
             exit(1)
-            
+
     except ValueError as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Configuration error: {e}")
@@ -62,7 +62,7 @@ def main():
         exit(1)
 
 
-def perform_sync(yc_client: YandexCloudClient, nb_client: NetBoxClient, 
+def perform_sync(yc_client: YandexCloudClient, nb_client: NetBoxClient,
                 logger: logging.Logger, dry_run: bool, ignore_clusters: bool = False) -> bool:
     """Perform the actual synchronization process."""
     try:
@@ -72,7 +72,7 @@ def perform_sync(yc_client: YandexCloudClient, nb_client: NetBoxClient,
         # Fetch all data from Yandex Cloud
         logger.info("Fetching data from Yandex Cloud...")
         yc_data = yc_client.fetch_all_data()
-        
+
         # Fetch all VMs from NetBox
         logger.info("Fetching VMs from NetBox...")
         netbox_vms = nb_client.fetch_vms()
@@ -99,15 +99,15 @@ def perform_sync(yc_client: YandexCloudClient, nb_client: NetBoxClient,
             _log_dry_run_actions(actions, logger)
         else:
             _execute_actions(actions, yc_data, nb_client, logger)
-            
+
             # After synchronization, assign missing primary IPs
             logger.info("Assigning missing primary IP addresses...")
             primary_fixed = nb_client.assign_missing_primary_ips(yc_data, dry_run=False)
             if primary_fixed > 0:
                 logger.info(f"Assigned primary IPs to {primary_fixed} VMs")
-            
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Synchronization failed: {e}")
         return False
@@ -135,13 +135,13 @@ def _log_dry_run_actions(actions: list, logger: logging.Logger):
     update_actions = [a for a in actions if a["action"] == "update"]
     exact_updates = [a for a in update_actions if a.get("match_type") == "exact"]
     name_only_updates = [a for a in update_actions if a.get("match_type") == "name_only"]
-    
+
     logger.info(f"[DRY-RUN] SYNCHRONIZATION SUMMARY:")
     logger.info(f"  Total actions: {len(actions)}")
     logger.info(f"  - Create new VMs: {len(create_actions)}")
     logger.info(f"  - Update VMs (exact match): {len(exact_updates)}")
     logger.info(f"  - Update VMs (name-only match): {len(name_only_updates)}")
-    
+
     if create_actions:
         logger.info(f"\n[DRY-RUN] WOULD CREATE {len(create_actions)} VMs:")
         for i, action in enumerate(create_actions[:10], 1):  # Show first 10
@@ -149,14 +149,14 @@ def _log_dry_run_actions(actions: list, logger: logging.Logger):
             logger.info(f"  {i:2d}. {vm['name']} → {vm['folder_name']}/{vm['cloud_name']}")
         if len(create_actions) > 10:
             logger.info(f"  ... and {len(create_actions) - 10} more VMs")
-    
+
     if exact_updates:
         logger.info(f"\n[DRY-RUN] WOULD UPDATE {len(exact_updates)} VMs (EXACT MATCH):")
         for i, action in enumerate(exact_updates[:5], 1):  # Show first 5
             nb_vm = action["netbox_vm"]
             updates = action["updates"]
             logger.info(f"  {i}. {nb_vm.name} → {list(updates.keys())}")
-    
+
     if name_only_updates:
         logger.info(f"\n[DRY-RUN] WOULD UPDATE {len(name_only_updates)} VMs (NAME-ONLY MATCH):")
         logger.info(f"  ⚠️  These VMs have matching names but different cluster assignments!")
@@ -168,13 +168,13 @@ def _log_dry_run_actions(actions: list, logger: logging.Logger):
             logger.info(f"  💡 Consider reviewing cluster assignments in NetBox")
 
 
-def _execute_actions(actions: list, yc_data: dict, nb_client: NetBoxClient, 
+def _execute_actions(actions: list, yc_data: dict, nb_client: NetBoxClient,
                     logger: logging.Logger):
     """Execute synchronization actions."""
     created_count = 0
     updated_count = 0
     failed_count = 0
-    
+
     for action in actions:
         try:
             if action["action"] == "create":
@@ -183,26 +183,26 @@ def _execute_actions(actions: list, yc_data: dict, nb_client: NetBoxClient,
                     created_count += 1
                 else:
                     failed_count += 1
-                    
+
             elif action["action"] == "update":
                 success = _update_vm(action, nb_client, logger)
                 if success:
                     updated_count += 1
                 else:
                     failed_count += 1
-                    
+
         except Exception as e:
             logger.error(f"Failed to execute action {action['action']}: {e}")
             failed_count += 1
-    
+
     logger.info(f"Sync completed: {created_count} created, {updated_count} updated, {failed_count} failed")
 
 
-def _create_vm(action: dict, yc_data: dict, nb_client: NetBoxClient, 
+def _create_vm(action: dict, yc_data: dict, nb_client: NetBoxClient,
               logger: logging.Logger) -> bool:
     """Create a new VM in NetBox with all associated resources."""
     vm = action["vm"]
-    
+
     # Find folder and cloud info
     folder = next((f for f in yc_data["folders"] if f["id"] == vm["folder_id"]), None)
     if not folder:
@@ -254,33 +254,44 @@ def _create_vm(action: dict, yc_data: dict, nb_client: NetBoxClient,
             if not netbox_iface:
                 continue
 
-            # Primary IPv4
-            if iface.get("primary_v4_address"):
-                ip_data = {
-                    "address": iface["primary_v4_address"],
-                    "status": "active",
-                    "interface": netbox_iface.id,
-                    "virtual_machine": netbox_vm.id,
-                    "is_primary": idx == 0,  # First interface as primary
-                    "description": f"Primary IP for {vm['name']}"
-                }
-                nb_client.create_ip(ip_data, yc_data["subnets"])
+            # Get internal and public IPs
+            internal_ip = iface.get("primary_v4_address")
+            public_ip = iface.get("primary_v4_address_one_to_one_nat")
+            
+            # Determine which IP should be primary (always internal)
+            primary_ip = None
+            secondary_ip = None
+            
+            if internal_ip and nb_client.is_internal_ip(internal_ip):
+                # Internal IP is always primary
+                primary_ip = internal_ip
+                secondary_ip = public_ip
+            elif public_ip and not internal_ip:
+                # Only public IP available (rare case)
+                primary_ip = public_ip
+            elif internal_ip:
+                # Fallback: use internal IP even if not detected as private
+                primary_ip = internal_ip
+                secondary_ip = public_ip
 
-            # One-to-one NAT IPv4 if exists
-            if iface.get("primary_v4_address_one_to_one_nat"):
-                ip_data = {
-                    "address": iface["primary_v4_address_one_to_one_nat"],
-                    "status": "active",
-                    "interface": netbox_iface.id,
-                    "virtual_machine": netbox_vm.id,
-                    "is_primary": False,
-                    "description": f"NAT IP for {vm['name']}"
-                }
-                nb_client.create_ip(ip_data, yc_data["subnets"])
+            # Create IPs using the enhanced logic
+            if primary_ip:
+                primary_ip_obj, all_ips = nb_client.create_vm_ips(
+                    vm_id=netbox_vm.id,
+                    interface_id=netbox_iface.id,
+                    primary_ip=primary_ip,
+                    public_ip=secondary_ip,
+                    subnets=yc_data["subnets"],
+                    vm_name=vm['name']
+                )
+                
+                # Set the first interface's primary IP as VM's primary IP
+                if idx == 0 and primary_ip_obj:
+                    nb_client._set_primary_ip(primary_ip_obj, netbox_vm.id)
 
         logger.info(f"Created NetBox VM: {vm['name']} in cluster: {folder['name']}")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to create VM {vm['name']}: {e}")
         return False

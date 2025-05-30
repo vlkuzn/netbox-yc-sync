@@ -182,10 +182,59 @@ class NetBoxClient:
         # Fallback to /32 if no matching subnet found
         return f"{ip_address}/32"
 
+    def is_internal_ip(self, ip_address: str) -> bool:
+        """Check if IP address is internal (private)."""
+        import ipaddress
+        
+        try:
+            ip = ipaddress.ip_address(ip_address)
+            return ip.is_private
+        except ValueError:
+            return False
+
+    def create_vm_ips(self, vm_id: int, interface_id: int, primary_ip: str, public_ip: str = None, 
+                     subnets: Optional[List[Dict[str, Any]]] = None, vm_name: str = "VM") -> tuple:
+        """Create both primary (internal) and public IPs for a VM interface."""
+        created_ips = []
+        primary_ip_obj = None
+        
+        # Create primary IP (always internal)
+        if primary_ip:
+            primary_ip_data = {
+                "address": primary_ip,
+                "status": "active",
+                "interface": interface_id,
+                "virtual_machine": vm_id,
+                "is_primary": True,
+                "description": f"Primary internal IP for {vm_name}"
+            }
+            primary_ip_obj = self.create_ip(primary_ip_data, subnets)
+            if primary_ip_obj:
+                created_ips.append(primary_ip_obj)
+        
+        # Create public IP (secondary) if exists
+        if public_ip and public_ip != primary_ip:
+            public_ip_data = {
+                "address": public_ip,
+                "status": "active", 
+                "interface": interface_id,
+                "virtual_machine": vm_id,
+                "is_primary": False,
+                "description": f"Public IP for {vm_name}"
+            }
+            public_ip_obj = self.create_ip(public_ip_data, subnets)
+            if public_ip_obj:
+                created_ips.append(public_ip_obj)
+        
+        return primary_ip_obj, created_ips
+
     def create_ip(self, ip_data: Dict[str, Any], subnets: Optional[List[Dict[str, Any]]] = None) -> Any:
         """Create a new IP address in NetBox with proper CIDR from subnet data."""
+        is_primary = ip_data.get("is_primary", False)
+        
         if self.dry_run:
-            logger.info(f"[DRY-RUN] Would create IP: {ip_data.get('address')} for interface {ip_data.get('interface')}")
+            primary_text = " (PRIMARY)" if is_primary else ""
+            logger.info(f"[DRY-RUN] Would create IP: {ip_data.get('address')}{primary_text} for interface {ip_data.get('interface')}")
             # Return mock IP object for dry-run
             class MockIP:
                 def __init__(self, data):
@@ -219,7 +268,7 @@ class NetBoxClient:
                 # Check for existing IP with different CIDR but same host
                 host_ip = original_address.split('/')[0]
                 all_ips_for_host = list(self.nb.ipam.ip_addresses.filter(q=host_ip))
-
+                
                 for existing_ip in all_ips_for_host:
                     existing_host = str(existing_ip.address).split('/')[0]
                     if existing_host == host_ip:
@@ -237,11 +286,8 @@ class NetBoxClient:
 
                 ip = self.nb.ipam.ip_addresses.create(ip_create_data)
 
-                # If this is primary IP, set it on the VM
-                if ip_data.get("is_primary") and ip_data.get("virtual_machine"):
-                    self._set_primary_ip(ip, ip_data["virtual_machine"])
-
-                logger.info(f"Created IP: {ip.address} for interface {ip_data['interface']}")
+                primary_text = " (PRIMARY)" if is_primary else ""
+                logger.info(f"Created IP: {ip.address}{primary_text} for interface {ip_data['interface']}")
                 return ip
             except Exception as e:
                 logger.error(f"Failed to create IP {ip_data['address']}: {str(e)}")
@@ -304,11 +350,11 @@ class NetBoxClient:
             return False
 
     def _set_primary_ip(self, ip: Any, vm_id: int) -> None:
-        """Safely set IP as primary for VM."""
+        """Safely set IP as primary for VM. Primary IP should always be internal."""
         if self.dry_run:
             logger.info(f"[DRY-RUN] Would set IP {ip.address} as primary for VM ID {vm_id}")
             return
-
+            
         try:
             vm = self.nb.virtualization.virtual_machines.get(id=vm_id)
             if vm:
@@ -317,10 +363,15 @@ class NetBoxClient:
                 if current_primary_id == ip.id:
                     logger.debug(f"IP {ip.address} is already primary for VM {vm.name}")
                     return
-
-                vm.primary_ip4 = ip.id
-                vm.save()
-                logger.info(f"Set IP {ip.address} as primary for VM {vm.name}")
+                
+                # Only set internal IPs as primary
+                ip_address = str(ip.address).split('/')[0]
+                if self.is_internal_ip(ip_address):
+                    vm.primary_ip4 = ip.id
+                    vm.save()
+                    logger.info(f"Set internal IP {ip.address} as primary for VM {vm.name}")
+                else:
+                    logger.warning(f"Skipping public IP {ip.address} for primary assignment on VM {vm.name}")
         except Exception as e:
             logger.error(f"Failed to set primary IP {ip.address} for VM {vm_id}: {str(e)}")
 
@@ -402,49 +453,64 @@ class NetBoxClient:
         return fixed_count
 
     def assign_missing_primary_ips(self, yc_data: Dict[str, Any] = None, dry_run=True) -> int:
-        """Assign primary IPs to VMs that don't have them."""
+        """Assign primary IPs to VMs that don't have them. Priority: internal IPs first."""
         logger.info("Checking for VMs without primary IP...")
-
+        
         all_vms = list(self.nb.virtualization.virtual_machines.all())
         vms_without_primary = [vm for vm in all_vms if not vm.primary_ip4]
-
+        
         if not vms_without_primary:
             logger.info("All VMs have primary IPs")
             return 0
-
+        
         logger.info(f"Found {len(vms_without_primary)} VMs without primary IP")
         fixed_count = 0
-
+        
         for vm in vms_without_primary:
             # Get VM interfaces and their IPs
             interfaces = list(self.nb.virtualization.interfaces.filter(virtual_machine_id=vm.id))
-
+            
             if not interfaces:
                 logger.warning(f"VM {vm.name} has no interfaces")
                 continue
-
-            # Find any IP assigned to VM interfaces
+            
+            # Find best IP for primary assignment (prefer internal IPs)
             best_ip = None
+            internal_ips = []
+            external_ips = []
+            
             for iface in interfaces:
                 iface_ips = list(self.nb.ipam.ip_addresses.filter(assigned_object_id=iface.id))
-                if iface_ips:
-                    best_ip = iface_ips[0]
-                    break
-
+                for ip in iface_ips:
+                    ip_address = str(ip.address).split('/')[0]
+                    if self.is_internal_ip(ip_address):
+                        internal_ips.append(ip)
+                    else:
+                        external_ips.append(ip)
+            
+            # Prioritize internal IPs for primary assignment
+            if internal_ips:
+                best_ip = internal_ips[0]
+            elif external_ips:
+                best_ip = external_ips[0]
+            
             if best_ip:
+                ip_address = str(best_ip.address).split('/')[0]
+                ip_type = "internal" if self.is_internal_ip(ip_address) else "external"
+                
                 if dry_run:
-                    logger.info(f"[DRY-RUN] Would set IP {best_ip.address} as primary for VM {vm.name}")
+                    logger.info(f"[DRY-RUN] Would set {ip_type} IP {best_ip.address} as primary for VM {vm.name}")
                 else:
                     try:
                         vm.primary_ip4 = best_ip.id
                         vm.save()
-                        logger.info(f"Set IP {best_ip.address} as primary for VM {vm.name}")
+                        logger.info(f"Set {ip_type} IP {best_ip.address} as primary for VM {vm.name}")
                         fixed_count += 1
                     except Exception as e:
                         logger.error(f"Failed to set primary IP for VM {vm.name}: {e}")
             else:
                 logger.warning(f"No IP addresses found for VM {vm.name}")
-
+        
         return fixed_count
 
     def update_vm(self, vm_id: int, updates: Dict[str, Any]) -> Any:
