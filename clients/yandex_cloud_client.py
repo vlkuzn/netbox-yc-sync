@@ -1,11 +1,11 @@
 import os
 import requests
-import structlog
+import logging
 from typing import List, Dict, Any
 
-logger = structlog.get_logger()
+logger = logging.getLogger(__name__)
 
-class YandexCloudCollector:
+class YandexCloudClient:
     """Collects VM, disk, network data from Yandex Cloud for all clouds/folders."""
     def __init__(self, token: str):
         self.token = token
@@ -193,10 +193,7 @@ class YandexCloudCollector:
                         "network_interfaces": network_interfaces
                     })
 
-        logger.info("fetched_all_yc_data", 
-                   clouds_count=len(result["clouds"]),
-                   folders_count=len(result["folders"]),
-                   vpcs_count=len(result["vpcs"]),
-                   subnets_count=len(result["subnets"]),
-                   vms_count=len(result["vms"]))
-        return result 
+        logger.info(f"Fetched Yandex Cloud data: {len(result['clouds'])} clouds, "
+                   f"{len(result['folders'])} folders, {len(result['vpcs'])} VPCs, "
+                   f"{len(result['subnets'])} subnets, {len(result['vms'])} VMs")
+        return result

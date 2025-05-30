@@ -36,4 +36,18 @@ env/
 *.log
 
 # Environment variables
-.env 
+.env
+
+# Examples and test files
+examples/
+*.log
+*.tmp
+
+# Editor files
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
